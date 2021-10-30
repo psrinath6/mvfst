@@ -128,7 +128,7 @@ namespace quic {
 namespace tperf {
 
 namespace {
-pthread_barrier_t  threadBarrier = PTHREAD_BARRIER_INITIALIZER;
+pthread_barrier_t  threadBarrier;
 
 ProbeSizeRaiserType parseRaiserType(uint32_t type) {
   auto maybeRaiserType = static_cast<ProbeSizeRaiserType>(type);
