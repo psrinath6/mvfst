@@ -29,6 +29,7 @@
 #include <quic/tools/tperf/TperfDSRSender.h>
 #include <quic/tools/tperf/TperfQLogger.h>
 
+DEFINE_int32(num_clients, 1, "Number of QUIC Clients");
 DEFINE_string(host, "::1", "TPerf server hostname/IP");
 DEFINE_int32(port, 6666, "TPerf server port");
 DEFINE_string(mode, "server", "Mode to run in: 'client' or 'server'");
@@ -127,6 +128,7 @@ namespace quic {
 namespace tperf {
 
 namespace {
+pthread_barrier_t  threadBarrier = PTHREAD_BARRIER_INITIALIZER;
 
 ProbeSizeRaiserType parseRaiserType(uint32_t type) {
   auto maybeRaiserType = static_cast<ProbeSizeRaiserType>(type);
@@ -581,7 +583,7 @@ class TPerfClient : public quic::QuicSocket::ConnectionCallback,
   TPerfClient(
       const std::string& host,
       uint16_t port,
-      std::chrono::milliseconds transportTimerResolution,
+      folly::EventBase* transportTimerResolution,
       int32_t duration,
       uint64_t window,
       bool gso,
@@ -661,6 +663,7 @@ class TPerfClient : public quic::QuicSocket::ConnectionCallback,
 
   void onNewUnidirectionalStream(quic::StreamId id) noexcept override {
     VLOG(5) << "TPerfClient: new unidirectional stream=" << id;
+    LOG(INFO) << "TPerfClient: new unidirectional stream=" << id;
     if (!timerScheduled_) {
       timerScheduled_ = true;
       eventBase_.timer().scheduleTimeout(this, duration_);
@@ -801,6 +804,25 @@ quic::CongestionControlType flagsToCongestionControlType(
   return *ccType;
 }
 
+
+
+void* setupAndStartTPerfClient(void* evb) {
+    TPerfClient client(
+        FLAGS_host,
+        FLAGS_port,
+        static_cast<folly::EventBase*>(evb),
+        FLAGS_duration,
+        FLAGS_window,
+        FLAGS_gso,
+        flagsToCongestionControlType(FLAGS_congestion),
+        FLAGS_max_receive_packet_size);
+
+    pthread_barrier_wait(&threadBarrier);
+    
+    client.start();
+    return NULL;
+}
+
 int main(int argc, char* argv[]) {
 #if FOLLY_HAVE_LIBGFLAGS
   // Enable glog logging to stderr by default.
@@ -836,16 +858,22 @@ int main(int argc, char* argv[]) {
       LOG(ERROR) << "bytes_per_stream option is server only";
       return 1;
     }
-    TPerfClient client(
-        FLAGS_host,
-        FLAGS_port,
-        std::chrono::milliseconds(FLAGS_client_transport_timer_resolution_ms),
-        FLAGS_duration,
-        FLAGS_window,
-        FLAGS_gso,
-        flagsToCongestionControlType(FLAGS_congestion),
-        FLAGS_max_receive_packet_size);
-    client.start();
+
+    folly::ScopedEventBaseThread networkThread("TPerfClientThread");
+    auto evb = networkThread.getEventBase();
+    
+    int num_clients = FLAGS_num_clients;
+    pthread_barrier_init(&threadBarrier, NULL, num_clients);    
+
+    pthread_t threads[num_clients];
+    for(int i=0;i<num_clients;i++) {          
+     pthread_create(&threads[i],NULL,setupAndStartTPerfClient,(void*)evb);
+    }
+
+    for(int i=0;i<num_clients;i++) {
+     pthread_join(threads[i],NULL);
+    }
+
   }
   return 0;
 }
