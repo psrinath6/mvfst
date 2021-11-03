@@ -29,7 +29,8 @@
 #include <quic/tools/tperf/TperfDSRSender.h>
 #include <quic/tools/tperf/TperfQLogger.h>
 
-DEFINE_int32(num_clients, 1, "Number of QUIC Clients");
+DEFINE_int32(distinct_conn, 1, "Number of distinct QUIC clients");
+DEFINE_int32(clients_per_conn, 1, "Number of QUIC clients per eventbase");
 DEFINE_string(host, "::1", "TPerf server hostname/IP");
 DEFINE_int32(port, 6666, "TPerf server port");
 DEFINE_string(mode, "server", "Mode to run in: 'client' or 'server'");
@@ -584,6 +585,7 @@ class TPerfClient : public quic::QuicSocket::ConnectionCallback,
       const std::string& host,
       uint16_t port,
       folly::EventBase* transportTimerResolution,
+      //std::chrono::milliseconds transportTimerResolution,
       int32_t duration,
       uint64_t window,
       bool gso,
@@ -810,8 +812,8 @@ void* setupAndStartTPerfClient(void* evb) {
     TPerfClient client(
         FLAGS_host,
         FLAGS_port,
-        static_cast<folly::EventBase*>(evb),
-        FLAGS_duration,
+        static_cast<folly::EventBase*>(evb), 
+	FLAGS_duration,
         FLAGS_window,
         FLAGS_gso,
         flagsToCongestionControlType(FLAGS_congestion),
@@ -858,19 +860,43 @@ int main(int argc, char* argv[]) {
       LOG(ERROR) << "bytes_per_stream option is server only";
       return 1;
     }
-
-    folly::ScopedEventBaseThread networkThread("TPerfClientThread");
-    auto evb = networkThread.getEventBase();
     
-    int num_clients = FLAGS_num_clients;
-    pthread_barrier_init(&threadBarrier, NULL, num_clients);    
+    // Calculate the number of clients per thread and the toal number of clients
+    int clients_per_conn = FLAGS_clients_per_conn;
+    int distinct_conn = FLAGS_distinct_conn;
+    int total_clients = distinct_conn * clients_per_conn;
+    int thread_counter = 0;
 
-    pthread_t threads[num_clients];
-    for(int i=0;i<num_clients;i++) {          
-     pthread_create(&threads[i],NULL,setupAndStartTPerfClient,(void*)evb);
+    // Set up barrier synchronization for threads
+    pthread_t threads[total_clients];
+    pthread_barrier_init(&threadBarrier, NULL, total_clients);    
+
+    for (int k=0; k<distinct_conn; k++) {
+      // Create event base threads that are shared between all the clients in clients_per_thread
+      folly::ScopedEventBaseThread networkThread("TPerfClientThread");
+      auto evb = networkThread.getEventBase();
+      
+
+      // Create and start clients to share the event base
+      for (int i=0; i<clients_per_conn; i++) {          
+        pthread_create(&threads[thread_counter++],NULL,setupAndStartTPerfClient,(void*)&evb);
+        /*evb->runInLoop([&] {
+	    TPerfClient client(
+                FLAGS_host,
+        	FLAGS_port,
+        	evb,//std::chrono::milliseconds(FLAGS_client_transport_timer_resolution_ms),
+        	FLAGS_duration,
+        	FLAGS_window,
+        	FLAGS_gso,
+        	flagsToCongestionControlType(FLAGS_congestion),
+        	FLAGS_max_receive_packet_size);
+            client.start();
+	},true);*/
+      }
     }
 
-    for(int i=0;i<num_clients;i++) {
+    // Wait for all threads to complete to avoid preemption
+    for (int i=0;i<total_clients;i++) {
      pthread_join(threads[i],NULL);
     }
 
