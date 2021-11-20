@@ -1,5 +1,7 @@
 #!/bin/bash
 
+cat clientloggers.txt | grep -i overall | sed -nr 's/[a-zA-Z/]+//pg' | cut -d ":" -f5 > throughput.txt
+
 file=throughput.txt
 sum=0
 
